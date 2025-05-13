@@ -681,7 +681,7 @@ class SolrRelation(
     sparkSession.sparkContext.register(acc, accName)
     SparkSolrAccumulatorContext.add(accName, acc.id)
     SolrSupport.indexDocs(zkHost, collectionId, batchSize, batchSizeType, docs, conf.commitWithin, Some(acc))
-    logger.info("Written {} documents to Solr collection {}", acc.value, collectionId)
+    logger.info(s"Written ${acc.value} documents to Solr collection $collectionId")
   }
 
   private def checkRequiredParams(): Unit = {

@@ -9,6 +9,7 @@ import com.lucidworks.spark.rdd.SolrRDD
 import org.apache.solr.client.solrj.SolrRequest.METHOD
 import org.apache.solr.client.solrj._
 import org.apache.solr.client.solrj.impl._
+import org.apache.solr.common.cloud.ZkStateReader
 import org.apache.solr.client.solrj.request.CollectionAdminRequest.ListAliases
 import org.apache.solr.client.solrj.request.schema.SchemaRequest
 import org.apache.solr.client.solrj.request.schema.SchemaRequest.UniqueKey
@@ -587,6 +588,13 @@ object SolrQuerySupport extends LazyLogging {
   def getFieldTypeToClassMap(cloudSolrClient: CloudSolrClient, collection: String) : Map[String, String] = {
     val fieldTypeToClassMap: mutable.Map[String, String] = new mutable.HashMap[String, String]
 
+    // Force authentication configuration before the request
+    val httpClientBuilderFactory = System.getProperty("solr.httpclient.builder.factory")
+    if (httpClientBuilderFactory != null && httpClientBuilderFactory.contains("PreemptiveBasicAuth")) {
+      val basicAuthBuilder = new PreemptiveBasicAuthClientBuilderFactory().getHttpClientBuilder(null)
+      HttpClientUtil.setHttpClientBuilder(basicAuthBuilder)
+    }
+    
     val fieldTypeRequest = new SchemaRequest.FieldTypes()
     val fieldTypeResponse = fieldTypeRequest.process(cloudSolrClient, collection)
     if (fieldTypeResponse.getStatus != 0) {

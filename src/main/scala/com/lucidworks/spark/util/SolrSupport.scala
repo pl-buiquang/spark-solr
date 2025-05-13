@@ -4,7 +4,7 @@ import java.beans.{IntrospectionException, Introspector, PropertyDescriptor}
 import java.lang.reflect.Modifier
 import java.net.{ConnectException, InetAddress, SocketException, URL}
 import java.nio.file.{Files, Paths}
-import java.util.{Collections, Date}
+import java.util.{Collections, Date, Optional}
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.regex.Pattern
@@ -14,7 +14,7 @@ import com.lucidworks.spark.fusion.FusionPipelineClient
 import com.lucidworks.spark.util.SolrSupport.{CloudClientParams, ShardInfo}
 import com.lucidworks.spark.{BatchSizeType, LazyLogging, SolrReplica, SolrShard, SparkSolrAccumulator}
 import org.apache.http.NoHttpResponseException
-import org.apache.solr.client.solrj.impl.{CloudSolrClient, _}
+import org.apache.solr.client.solrj.impl.{CloudSolrClient, HttpClientUtil, HttpSolrClient, Krb5HttpClientBuilder, PreemptiveBasicAuthClientBuilderFactory, _}
 import org.apache.solr.client.solrj.request.UpdateRequest
 import org.apache.solr.client.solrj.response.QueryResponse
 import org.apache.solr.client.solrj.{SolrClient, SolrQuery, SolrServerException}
@@ -148,15 +148,10 @@ object SolrSupport extends LazyLogging {
   def isBasicAuthNeeded(zkHost: String): Boolean = synchronized {
     val credentials = System.getProperty(PreemptiveBasicAuthClientBuilderFactory.SYS_PROP_BASIC_AUTH_CREDENTIALS)
     val configFile = System.getProperty(PreemptiveBasicAuthClientBuilderFactory.SYS_PROP_HTTP_CLIENT_CONFIG)
-    if (credentials != null || configFile != null) {
-      if (configFile != null) {
-        logger.debug("Basic auth configured with config file {}", configFile)
-      } else {
-        logger.debug("Basic auth configured with creds {}", credentials)
-      }
-      return true
-    }
-    return false
+    val httpClientBuilderFactory = System.getProperty("solr.httpclient.builder.factory")
+    
+    credentials != null || configFile != null ||
+        (httpClientBuilderFactory != null && httpClientBuilderFactory.contains("PreemptiveBasicAuth"))
   }
 
   def readKerberosFile(path: String): Unit = {
@@ -168,20 +163,103 @@ object SolrSupport extends LazyLogging {
     if (fusionAuthClass.isDefined) {
       val authHttpClientBuilder = getAuthHttpClientBuilder(zkHost)
       if (authHttpClientBuilder.isDefined) {
-        logger.info("Custom http client defined: {}", authHttpClientBuilder)
-        return authHttpClientBuilder.get
-          .withHttpClient(getCachedCloudClient(zkHost).getHttpClient)
-          .withBaseSolrUrl(shardUrl).build()
+        return authHttpClientBuilder.get.withBaseSolrUrl(shardUrl).build()
       }
     }
-    new HttpSolrClient.Builder()
-      .withBaseSolrUrl(shardUrl)
-      .withHttpClient(getCachedCloudClient(zkHost).getHttpClient)
-      .build()
+    
+    // Configure global authentication for HttpSolrClient
+    if (isKerberosNeeded(zkHost)) {
+      val krb5HttpClientBuilder = new Krb5HttpClientBuilder().getHttpClientBuilder(null)
+      HttpClientUtil.setHttpClientBuilder(krb5HttpClientBuilder)
+    } else if (isBasicAuthNeeded(zkHost)) {
+      val basicAuthBuilder = new PreemptiveBasicAuthClientBuilderFactory().getHttpClientBuilder(null)
+      HttpClientUtil.setHttpClientBuilder(basicAuthBuilder)
+    }
+    
+    new HttpSolrClient.Builder().withBaseSolrUrl(shardUrl).build()
   }
 
   case class ShardInfo(shardUrl: String, zkHost: String)
-  case class CloudClientParams(zkHost: String, zkClientTimeout: Int=30000, zkConnectTimeout: Int=60000, solrParams: Option[ModifiableSolrParams] = None)
+  case class CloudClientParams(zkHost: String, zkClientTimeout: Int=30000, zkConnectTimeout: Int=60000, httpTimeout: Int=60000, httpConnectTimeout: Int=60000, solrParams: Option[ModifiableSolrParams] = None)
+
+  /**
+   * Configure authentication for Http2SolrClient.Builder
+   */
+  private def configureAuth(clientBuilder: Http2SolrClient.Builder): Unit = {
+    val basicAuthCredentials = Option(System.getProperty(PreemptiveBasicAuthClientBuilderFactory.SYS_PROP_BASIC_AUTH_CREDENTIALS))
+    val httpClientBuilderFactory = Option(System.getProperty("solr.httpclient.builder.factory"))
+    val httpClientConfig = Option(System.getProperty("solr.httpclient.config"))
+
+    if (httpClientBuilderFactory.exists(_.contains("PreemptiveBasicAuthClientBuilderFactory"))) {
+      basicAuthCredentials match {
+        case Some(credentials) =>
+          parseCredentials(credentials).foreach { case (username, password) =>
+            clientBuilder.withBasicAuthCredentials(username, password)
+          }
+        case None =>
+          httpClientConfig.foreach { configFile =>
+            parseAuthFile(configFile).foreach { case (username, password) =>
+              clientBuilder.withBasicAuthCredentials(username, password)
+            }
+          }
+      }
+    } else if (basicAuthCredentials.isDefined) {
+      parseCredentials(basicAuthCredentials.get).foreach { case (username, password) =>
+        clientBuilder.withBasicAuthCredentials(username, password)
+      }
+    }
+  }
+
+  /**
+   * Parse credentials from username:password format
+   */
+  private def parseCredentials(credentials: String): Option[(String, String)] = {
+    val parts = credentials.split(":", 2)
+    if (parts.length == 2) Some((parts(0), parts(1))) else None
+  }
+
+  /**
+   * Parse authentication file supporting both properties and colon-separated formats
+   */
+  private def parseAuthFile(configFile: String): Option[(String, String)] = {
+    try {
+      val authFile = new java.io.File(configFile)
+      if (!authFile.exists()) return None
+
+      val source = scala.io.Source.fromFile(authFile)
+      try {
+        val content = source.mkString.trim
+        
+        // Try properties format first (httpBasicAuthUser=xxx, httpBasicAuthPassword=xxx)
+        if (content.contains("httpBasicAuthUser=") && content.contains("httpBasicAuthPassword=")) {
+          val lines = content.split("\\r?\\n")
+          var username: String = null
+          var password: String = null
+          
+          lines.foreach { line =>
+            val trimmed = line.trim
+            if (trimmed.startsWith("httpBasicAuthUser=")) {
+              username = trimmed.substring("httpBasicAuthUser=".length)
+            } else if (trimmed.startsWith("httpBasicAuthPassword=")) {
+              password = trimmed.substring("httpBasicAuthPassword=".length)
+            }
+          }
+          
+          if (username != null && password != null) Some((username, password)) else None
+        } else if (content.contains(":") && !content.startsWith("{")) {
+          // Try colon-separated format (username:password)
+          parseCredentials(content)
+        } else {
+          None
+        }
+      } finally {
+        source.close()
+      }
+    } catch {
+      case _: Exception => None
+    }
+  }
+
 
   def getNewHttpSolrClient(shardUrl: String, zkHost: String): HttpSolrClient = {
     getHttpSolrClient(shardUrl, zkHost)
@@ -194,41 +272,40 @@ object SolrSupport extends LazyLogging {
   // This method should not be used directly. The method [[SolrSupport.getCachedCloudClient]] should be used instead
   private def getSolrCloudClient(cloudClientParams: CloudClientParams): CloudSolrClient =  {
     val zkHost = cloudClientParams.zkHost
-    logger.info(s"Creating a new SolrCloudClient for zkhost $zkHost")
-    val solrClientBuilder = new CloudSolrClient.Builder().withZkHost(zkHost)
-    val authHttpClientBuilder = getAuthHttpClientBuilder(zkHost)
-    if (authHttpClientBuilder.isDefined) {
-      if (authHttpClientBuilder.get != null) {
-        logger.info("Configured auth http client builder")
-        solrClientBuilder.withLBHttpSolrClientBuilder(
-          new LBHttpSolrClient.Builder().withHttpSolrClientBuilder(authHttpClientBuilder.get))
-      } else {
-        logger.error("No custom builder found for configured zkhost")
-      }
-    }
-    val params = new ModifiableSolrParams(cloudClientParams.solrParams.orNull)
-    params.set(HttpClientUtil.PROP_FOLLOW_REDIRECTS, false)
+    
+    // Configure authentication globally first - this ensures it's available for all clients
     if (isKerberosNeeded(zkHost)) {
-      val krb5HttpClientBuilder = new Krb5HttpClientBuilder().getHttpClientBuilder(java.util.Optional.empty())
+      val krb5HttpClientBuilder = new Krb5HttpClientBuilder().getHttpClientBuilder(null)
       HttpClientUtil.setHttpClientBuilder(krb5HttpClientBuilder)
     }
     if (isBasicAuthNeeded(zkHost)) {
-      val basicAuthBuilder = new PreemptiveBasicAuthClientBuilderFactory().getHttpClientBuilder(java.util.Optional.empty())
+      val basicAuthBuilder = new PreemptiveBasicAuthClientBuilderFactory().getHttpClientBuilder(null)
       HttpClientUtil.setHttpClientBuilder(basicAuthBuilder)
     }
-    val httpClient = HttpClientUtil.createClient(params)
-    val solrClient = solrClientBuilder.withHttpClient(httpClient).build()
-    solrClient.setZkClientTimeout(cloudClientParams.zkClientTimeout)
-    solrClient.setZkConnectTimeout(cloudClientParams.zkConnectTimeout)
+    
+    // Create Http2SolrClient.Builder with timeouts and explicit authentication
+    val internalClientBuilder = new Http2SolrClient.Builder()
+      .connectionTimeout(cloudClientParams.httpConnectTimeout)
+      .requestTimeout(cloudClientParams.httpTimeout)
+      .idleTimeout(cloudClientParams.httpTimeout)
+    
+    // Configure authentication explicitly on Http2SolrClient.Builder for Solr 9
+    configureAuth(internalClientBuilder)
+    
+    // Build CloudSolrClient
+    val solrClient = new CloudSolrClient.Builder(List(zkHost).asJava, Optional.empty())
+      .withInternalClientBuilder(internalClientBuilder)
+      .withZkClientTimeout(cloudClientParams.zkClientTimeout, TimeUnit.MILLISECONDS)
+      .withZkConnectTimeout(cloudClientParams.zkConnectTimeout, TimeUnit.MILLISECONDS)
+      .build()
+    
     solrClient.connect()
-    logger.debug(s"Created new SolrCloudClient for zkhost $zkHost")
     solrClient
   }
 
   private def getAuthHttpClientBuilder(zkHost: String): Option[HttpSolrClient.Builder] = {
     val fusionAuthClass = getFusionAuthClass(AUTH_CONFIGURER_CLASS)
     if (fusionAuthClass.isDefined) {
-      logger.info("Custom class '{}' configured for auth", fusionAuthClass.get)
       val authClass: Class[_ <: FusionAuthHttpClient] = fusionAuthClass.get
       val constructor = authClass.getDeclaredConstructor(classOf[java.lang.String])
       val authHttpClient: FusionAuthHttpClient = constructor.newInstance(zkHost)
@@ -247,17 +324,27 @@ object SolrSupport extends LazyLogging {
   }
 
   def getCachedCloudClient(zkHost: String): CloudSolrClient = {
-    CacheCloudSolrClient.cache.get(CloudClientParams(zkHost))
+    val clientParams = CloudClientParams(zkHost)
+    CacheCloudSolrClient.cache.get(clientParams)
   }
 
   def getSolrBaseUrl(zkHost: String): String = {
     val solrClient = getCachedCloudClient(zkHost)
-    val liveNodes = solrClient.getZkStateReader.getClusterState.getLiveNodes
+    val zkStateReader = ZkStateReader.from(solrClient)
+    val clusterState = zkStateReader.getClusterState
+    val liveNodes = clusterState.getLiveNodes
+    
     if (liveNodes.isEmpty) {
       throw new RuntimeException("No live nodes found for cluster: " + zkHost)
     }
-    var solrBaseUrl = solrClient.getZkStateReader.getBaseUrlForNodeName(liveNodes.iterator().next())
-    if (!solrBaseUrl.endsWith("?")) solrBaseUrl += "/"
+    
+    val firstLiveNode = liveNodes.iterator().next()
+    var solrBaseUrl: String = zkStateReader.getBaseUrlForNodeName(firstLiveNode)
+    
+    if (!solrBaseUrl.endsWith("?")) {
+      solrBaseUrl = solrBaseUrl + "/"
+    }
+    
     solrBaseUrl
   }
 
@@ -320,8 +407,19 @@ object SolrSupport extends LazyLogging {
                 rdd: RDD[SolrInputDocument],
                 commitWithin: Option[Int],
                 accumulator: Option[SparkSolrAccumulator] = None): Unit = {
-    //TODO: Return success or false by boolean ?
+    // Capture and distribute authentication configuration to executors
+    val authConfig = captureAuthenticationConfig()
+    
+    // Clear cached clients if authentication is configured to ensure fresh auth
+    if (hasAuthenticationConfigured(authConfig)) {
+      CacheCloudSolrClient.cache.invalidateAll()
+      CacheHttpSolrClient.cache.invalidateAll()
+    }
+    
     rdd.foreachPartition(solrInputDocumentIterator => {
+      // Apply authentication configuration on executor
+      applyAuthenticationConfig(authConfig)
+      configureGlobalAuthentication(authConfig)
       val solrClient = getCachedCloudClient(zkHost)
       val batch = new ArrayBuffer[SolrInputDocument]()
       var numDocs: Long = 0
@@ -382,10 +480,14 @@ object SolrSupport extends LazyLogging {
       case e : Exception =>
         SolrException.getRootCause(e) match {
           case e1 @ (_:SessionExpiredException | _:OperationTimeoutException) =>
-            logger.info("Got an exception with message '" + e1.getMessage +  "'.  Resetting the cached solrClient")
             CacheCloudSolrClient.cache.invalidate(CloudClientParams(zkHost))
             val newClient = SolrSupport.getCachedCloudClient(zkHost)
             sendBatchToSolr(newClient, collection, batch, commitWithin, numBytesInBatch)
+          case _ =>
+            e match {
+              case re: RuntimeException => throw re
+              case ex: Exception => throw new RuntimeException(ex)
+            }
         }
     }
   }
@@ -408,68 +510,41 @@ object SolrSupport extends LazyLogging {
                       numBytesInBatch: Long): Unit = {
     val req = new UpdateRequest()
     req.setParam("collection", collection)
-
-    val initialTime = System.currentTimeMillis()
-
+    
     if (commitWithin.isDefined)
       req.setCommitWithin(commitWithin.get)
-
-    logOutgoingBatch(collection, batch, numBytesInBatch)
 
     req.add(asJavaCollection(batch))
 
     try {
       solrClient.request(req)
-      val timeTaken = (System.currentTimeMillis() - initialTime)/1000.0
-      logCompletedBatch(batch, numBytesInBatch, timeTaken)
     } catch {
       case e: Exception =>
         if (shouldRetry(e)) {
-          logger.error("Send batch to collection " + collection + " failed due to " + e + " ; will retry ...")
           try {
             Thread.sleep(2000)
           } catch {
             case ie: InterruptedException => Thread.interrupted()
           }
-
+          
           try {
             solrClient.request(req)
           } catch {
             case ex: Exception =>
-              logger.error("Send batch to collection " + collection + " failed due to: " + e, e)
               ex match {
                 case re: RuntimeException => throw re
                 case e: Exception => throw new RuntimeException(e)
               }
           }
         } else {
-          logger.error("Send batch to collection " + collection + " failed due to: " + e, e)
           e match {
             case re: RuntimeException => throw re
             case ex: Exception => throw new RuntimeException(ex)
           }
         }
-
-    }
-
-  }
-
-  private def logCompletedBatch(batch: Iterable[SolrInputDocument], numBytesInBatch: Long, timeTaken: Double): Unit = {
-    if (numBytesInBatch > 0) {
-      logger.info("Took '" + timeTaken + "' secs to index '" + batch.size + "' documents with '" + numBytesInBatch + "' bytes")
-    } else {
-      logger.info("Took '" + timeTaken + "' secs to index '" + batch.size + "' documents bytes")
     }
   }
 
-  private def logOutgoingBatch(collection: String, batch: Iterable[SolrInputDocument], numBytesInBatch: Long): Unit = {
-    if (numBytesInBatch > 0) {
-      logger.info("Sending batch of " + batch.size + " with " + numBytesInBatch + " bytes to collection " + collection)
-    } else {
-      logger.info("Sending batch of " + batch.size + " to collection " + collection)
-    }
-
-  }
 
   def shouldRetry(exc: Exception): Boolean = {
     val rootCause = SolrException.getRootCause(exc)
@@ -618,73 +693,10 @@ object SolrSupport extends LazyLogging {
     None
   }
 
-  def filterDocuments(
-      filterContext: DocFilterContext,
-      zkHost: String,
-      collection: String,
-      docs: DStream[SolrInputDocument]): DStream[SolrInputDocument] = {
-    val partitionIndex = new AtomicInteger(0)
-    val idFieldName = filterContext.getDocIdFieldName
-
-    docs.mapPartitions(solrInputDocumentIterator => {
-      val startNano: Long = System.nanoTime()
-      val partitionId: Int = partitionIndex.incrementAndGet()
-
-      val partitionFq: String = "docfilterid_i:" + partitionId
-      // TODO: Can this be used concurrently? probably better to have each partition check it out from a pool
-      val solr = EmbeddedSolrServerFactory.singleton.getEmbeddedSolrServer(zkHost, collection)
-
-      // index all docs in this partition, then match queries
-      var numDocs: Int = 0
-      val inputDocs: mutable.Map[String, SolrInputDocument] = new mutable.HashMap[String, SolrInputDocument]
-      while (solrInputDocumentIterator.hasNext) {
-        numDocs += 1
-        val doc: SolrInputDocument = solrInputDocumentIterator.next()
-        doc.setField("docfilterid_i", partitionId)
-        solr.add(doc)
-        inputDocs.put(doc.getFieldValue(idFieldName).asInstanceOf[String], doc)
-      }
-      solr.commit
-
-      for (q: SolrQuery <- filterContext.getQueries) {
-        val query = q.getCopy
-        query.setFields(idFieldName)
-        query.setRows(inputDocs.size)
-        query.addFilterQuery(partitionFq)
-
-        var queryResponse: Option[QueryResponse] = None
-        try {
-          queryResponse = Some(solr.query(query))
-        }
-        catch {
-          case e: SolrServerException =>
-            throw new RuntimeException(e)
-        }
-
-        if (queryResponse.isDefined) {
-          for (doc: SolrDocument  <- queryResponse.get.getResults) {
-            val docId: String = doc.getFirstValue(idFieldName).asInstanceOf[String]
-            val inputDoc = inputDocs.get(docId)
-            if (inputDoc.isDefined) filterContext.onMatch(q, inputDoc.get)
-          }
-
-          solr.deleteByQuery(partitionFq, 100)
-          val durationNano: Long = System.nanoTime - startNano
-
-          logger.debug("Partition " + partitionId + " took " + TimeUnit.MILLISECONDS.convert(durationNano, TimeUnit.NANOSECONDS) + "ms to process " + numDocs + " docs")
-          for (inputDoc <- inputDocs.values) {
-            inputDoc.removeField("docfilterid_i")
-          }
-        }
-      }
-
-      inputDocs.valuesIterator
-    })
-  }
 
   def buildShardList(zkHost: String, collection: String, shardsTolerant: Boolean): List[SolrShard] = {
     val solrClient = getCachedCloudClient(zkHost)
-    val zkStateReader: ZkStateReader = solrClient.getZkStateReader
+    val zkStateReader: ZkStateReader = ZkStateReader.from(solrClient)
     val clusterState: ClusterState = zkStateReader.getClusterState
     var collections = Array.empty[String]
     for(col <- collection.split(",")) {
@@ -785,4 +797,98 @@ object SolrSupport extends LazyLogging {
 
   case class WorkerShardSplit(query: SolrQuery, replica: SolrReplica)
   case class ExportHandlerSplit(query: SolrQuery, replica: SolrReplica, numWorkers: Int, workerId: Int)
+
+  // Authentication configuration case class for serialization to executors
+  case class AuthConfig(
+    basicAuthCredentials: Option[String],
+    basicAuthConfigFile: Option[String],
+    httpClientConfig: Option[String],
+    httpClientBuilderFactory: Option[String],
+    kerberosLoginConfig: Option[String],
+    authFileContent: Option[String]
+  )
+
+  /**
+   * Check if authentication is configured
+   */
+  private def hasAuthenticationConfigured(authConfig: AuthConfig): Boolean = {
+    authConfig.basicAuthCredentials.isDefined ||
+    authConfig.httpClientBuilderFactory.isDefined ||
+    authConfig.kerberosLoginConfig.isDefined ||
+    authConfig.httpClientConfig.isDefined
+  }
+
+  /**
+   * Configure global authentication on executor
+   */
+  private def configureGlobalAuthentication(authConfig: AuthConfig): Unit = {
+    if (authConfig.kerberosLoginConfig.isDefined) {
+      val krb5HttpClientBuilder = new Krb5HttpClientBuilder().getHttpClientBuilder(null)
+      HttpClientUtil.setHttpClientBuilder(krb5HttpClientBuilder)
+    } else if (authConfig.httpClientBuilderFactory.exists(_.contains("PreemptiveBasicAuth"))) {
+      val basicAuthBuilder = new PreemptiveBasicAuthClientBuilderFactory().getHttpClientBuilder(null)
+      HttpClientUtil.setHttpClientBuilder(basicAuthBuilder)
+    }
+  }
+
+  /**
+   * Capture authentication configuration on driver
+   */
+  def captureAuthenticationConfig(): AuthConfig = {
+    val basicAuthCredentials = Option(System.getProperty(PreemptiveBasicAuthClientBuilderFactory.SYS_PROP_BASIC_AUTH_CREDENTIALS))
+    val basicAuthConfigFile = Option(System.getProperty(PreemptiveBasicAuthClientBuilderFactory.SYS_PROP_HTTP_CLIENT_CONFIG))
+    val httpClientConfig = Option(System.getProperty("solr.httpclient.config"))
+    val httpClientBuilderFactory = Option(System.getProperty("solr.httpclient.builder.factory"))
+    val kerberosLoginConfig = Option(System.getProperty(Krb5HttpClientBuilder.LOGIN_CONFIG_PROP))
+    
+    // Read auth file content if available
+    val authFileContent = httpClientConfig.orElse(basicAuthConfigFile).flatMap { file =>
+      try {
+        Some(scala.io.Source.fromFile(file).mkString)
+      } catch {
+        case _: Exception => None
+      }
+    }
+    
+    AuthConfig(
+      basicAuthCredentials = basicAuthCredentials,
+      basicAuthConfigFile = basicAuthConfigFile,
+      httpClientConfig = httpClientConfig,
+      httpClientBuilderFactory = httpClientBuilderFactory,
+      kerberosLoginConfig = kerberosLoginConfig,
+      authFileContent = authFileContent
+    )
+  }
+
+  /**
+   * Apply authentication configuration on executor
+   */
+  def applyAuthenticationConfig(authConfig: AuthConfig): Unit = {
+    // Set system properties
+    authConfig.basicAuthCredentials.foreach(System.setProperty(PreemptiveBasicAuthClientBuilderFactory.SYS_PROP_BASIC_AUTH_CREDENTIALS, _))
+    authConfig.basicAuthConfigFile.foreach(System.setProperty(PreemptiveBasicAuthClientBuilderFactory.SYS_PROP_HTTP_CLIENT_CONFIG, _))
+    authConfig.httpClientConfig.foreach(System.setProperty("solr.httpclient.config", _))
+    authConfig.httpClientBuilderFactory.foreach(System.setProperty("solr.httpclient.builder.factory", _))
+    authConfig.kerberosLoginConfig.foreach(System.setProperty(Krb5HttpClientBuilder.LOGIN_CONFIG_PROP, _))
+    
+    // Write auth file content to executor if available
+    for {
+      content <- authConfig.authFileContent
+      configPath <- authConfig.httpClientConfig
+    } {
+      try {
+        val authFile = new java.io.File(configPath)
+        authFile.getParentFile.mkdirs()
+        val writer = new java.io.PrintWriter(authFile)
+        try {
+          writer.write(content)
+        } finally {
+          writer.close()
+        }
+      } catch {
+        case _: Exception => // Ignore file creation errors
+      }
+    }
+  }
+
 }
