@@ -1,0 +1,58 @@
+stages:
+  - build
+  - test
+  - deploy
+
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+
+cache:
+  paths:
+    - .m2/repository/
+
+build:
+  stage: build
+  image: maven:3.8.6-openjdk-11
+  script:
+    - mvn clean compile -s ci_settings.xml
+  cache:
+    key: cohort360_spark_solr_m2_cache
+    paths:
+      - "$CI_PROJECT_DIR/.m2/repository"
+  artifacts:
+    paths:
+      - target/
+    expire_in: 1 hour
+
+test:
+  stage: test
+  image: maven:3.8.6-openjdk-11
+  cache:
+    key: cohort360_spark_solr_m2_cache
+    paths:
+      - "$CI_PROJECT_DIR/.m2/repository"
+  script:
+    - mvn test -s ci_settings.xml
+  artifacts:
+    reports:
+      junit:
+        - target/surefire-reports/TEST-*.xml
+        - target/scalatest-reports/TEST-*.xml
+
+deploy:
+  stage: deploy
+  image: maven:3.8.6-openjdk-11
+  cache:
+    key: cohort360_spark_solr_m2_cache
+    paths:
+      - "$CI_PROJECT_DIR/.m2/repository"
+  script:
+    - mvn clean deploy -DskipTests -s ci_settings.xml
+  only:
+    - master
+    - main
+    - develop
+  artifacts:
+    paths:
+      - target/*.jar
+    expire_in: 30 days

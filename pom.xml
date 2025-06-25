@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.lucidworks.spark</groupId>
   <artifactId>spark-solr</artifactId>
-  <version>4.0.4-SNAPSHOT</version>
+  <version>4.1.0-SNAPSHOT</version>
   <packaging>jar</packaging>
   <name>spark-solr</name>
   <description>Tools for reading data from Spark into Solr</description>
@@ -31,9 +31,13 @@
     <url>https://github.com/LucidWorks/spark-solr</url>
   </scm>
   <distributionManagement>
+    <repository>
+      <id>gitlab-maven</id>
+      <url>https://gitlab.data.aphp.fr/api/v4/projects/2434/packages/maven</url>
+    </repository>
     <snapshotRepository>
-      <id>ossrh</id>
-      <url>https://oss.sonatype.org/content/repositories/snapshots</url>
+      <id>gitlab-maven</id>
+      <url>https://gitlab.data.aphp.fr/api/v4/projects/2434/packages/maven</url>
     </snapshotRepository>
   </distributionManagement>
   <properties>
@@ -57,7 +61,7 @@
         <enabled>false</enabled>
       </snapshots>
     </pluginRepository>
-  </pluginRepositories> 
+  </pluginRepositories>
   <repositories>
     <repository>
       <id>Central Maven repository</id>
@@ -101,7 +105,7 @@
                 <phase>verify</phase>
                 <goals>
                   <goal>sign</goal>
-	        </goals>
+                </goals>
                 <configuration>
                   <gpgArguments>
                     <arg>--pinentry-mode</arg>
@@ -127,8 +131,8 @@
             <version>0.8.7</version>
             <configuration>
               <excludes>
-              <exclude>com/lucidworks/spark/example/**</exclude>
-              <exclude>**/*Test*</exclude>
+                <exclude>com/lucidworks/spark/example/**</exclude>
+                <exclude>**/*Test*</exclude>
               </excludes>
             </configuration>
             <executions>
@@ -222,8 +226,8 @@
           <target>${java.version}</target>
           <showDeprecation>true</showDeprecation>
           <compilerArguments>
-            <Xlint:unchecked />
-            <Xlint:deprecation />
+            <Xlint:unchecked/>
+            <Xlint:deprecation/>
           </compilerArguments>
         </configuration>
       </plugin>
@@ -369,8 +373,8 @@
                 </relocation>
                 <!-- Commented out because the maven-shade-plugin does not work for Scala classes due to ScalaSig-->
                 <!--<relocation>-->
-                  <!--<pattern>org.apache.solr</pattern>-->
-                  <!--<shadedPattern>shaded.apache.solr</shadedPattern>-->
+                <!--<pattern>org.apache.solr</pattern>-->
+                <!--<shadedPattern>shaded.apache.solr</shadedPattern>-->
                 <!--</relocation>-->
                 <relocation>
                   <pattern>org.apache.commons.cli</pattern>
@@ -379,7 +383,7 @@
                 <relocation>
                   <pattern>org.apache.http</pattern>
                   <shadedPattern>shaded.apache.http</shadedPattern>
-		</relocation>
+                </relocation>
               </relocations>
             </configuration>
           </execution>
@@ -397,19 +401,6 @@
             </goals>
           </execution>
         </executions>
-      </plugin>
-      <plugin>
-        <groupId>org.sonatype.plugins</groupId>
-        <artifactId>nexus-staging-maven-plugin</artifactId>
-        <version>1.6.8</version>
-        <extensions>true</extensions>
-        <configuration>
-          <serverId>ossrh</serverId>
-          <nexusUrl>https://oss.sonatype.org/</nexusUrl>
-          <stagingProgressTimeoutMinutes>15</stagingProgressTimeoutMinutes>
-          <stagingProgressPauseDurationSeconds>10</stagingProgressPauseDurationSeconds>
-          <autoReleaseAfterClose>true</autoReleaseAfterClose>
-        </configuration>
       </plugin>
     </plugins>
   </build>
@@ -474,9 +465,9 @@
       <version>${spark.version}</version>
     </dependency>
     <dependency>
-        <groupId>org.apache.bahir</groupId>
-        <artifactId>spark-streaming-twitter_${scala.binary.version}</artifactId>
-        <version>2.4.0</version>
+      <groupId>org.apache.bahir</groupId>
+      <artifactId>spark-streaming-twitter_${scala.binary.version}</artifactId>
+      <version>2.4.0</version>
     </dependency>
     <dependency>
       <groupId>commons-cli</groupId>
