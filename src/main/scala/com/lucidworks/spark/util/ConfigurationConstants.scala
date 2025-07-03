@@ -59,4 +59,12 @@ object ConfigurationConstants {
   val MAX_ROWS: String = "max_rows"
 
   val ACCUMULATOR_NAME: String = "acc_name"
+  
+  // Timeout configuration params
+  val HTTP_TIMEOUT: String = "http_timeout"
+  val HTTP_CONNECT_TIMEOUT: String = "http_connect_timeout"
+  val ZK_CLIENT_TIMEOUT: String = "zk_client_timeout"
+  val ZK_CONNECT_TIMEOUT: String = "zk_connect_timeout"
+  val RETRY_ATTEMPTS: String = "retry_attempts"
+  val RETRY_DELAY_MS: String = "retry_delay_ms"
 }

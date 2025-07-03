@@ -180,7 +180,7 @@ object SolrSupport extends LazyLogging {
   }
 
   case class ShardInfo(shardUrl: String, zkHost: String)
-  case class CloudClientParams(zkHost: String, zkClientTimeout: Int=30000, zkConnectTimeout: Int=60000, httpTimeout: Int=60000, httpConnectTimeout: Int=60000, solrParams: Option[ModifiableSolrParams] = None)
+  case class CloudClientParams(zkHost: String, zkClientTimeout: Int=30000, zkConnectTimeout: Int=60000, httpTimeout: Int=120000, httpConnectTimeout: Int=60000, solrParams: Option[ModifiableSolrParams] = None)
 
   /**
    * Configure authentication for Http2SolrClient.Builder
@@ -288,6 +288,7 @@ object SolrSupport extends LazyLogging {
       .connectionTimeout(cloudClientParams.httpConnectTimeout)
       .requestTimeout(cloudClientParams.httpTimeout)
       .idleTimeout(cloudClientParams.httpTimeout)
+      .maxConnectionsPerHost(50)  // Increase connection pool size
     
     // Configure authentication explicitly on Http2SolrClient.Builder for Solr 9
     configureAuth(internalClientBuilder)
@@ -326,6 +327,16 @@ object SolrSupport extends LazyLogging {
   def getCachedCloudClient(zkHost: String): CloudSolrClient = {
     val clientParams = CloudClientParams(zkHost)
     CacheCloudSolrClient.cache.get(clientParams)
+  }
+
+  def createCloudClientParams(zkHost: String, 
+                              solrConf: Option[com.lucidworks.spark.SolrConf] = None): CloudClientParams = {
+    val httpTimeout = solrConf.flatMap(_.getHttpTimeout).getOrElse(120000)
+    val httpConnectTimeout = solrConf.flatMap(_.getHttpConnectTimeout).getOrElse(60000)
+    val zkClientTimeout = solrConf.flatMap(_.getZkClientTimeout).getOrElse(30000)
+    val zkConnectTimeout = solrConf.flatMap(_.getZkConnectTimeout).getOrElse(60000)
+    
+    CloudClientParams(zkHost, zkClientTimeout, zkConnectTimeout, httpTimeout, httpConnectTimeout)
   }
 
   def getSolrBaseUrl(zkHost: String): String = {
@@ -508,6 +519,16 @@ object SolrSupport extends LazyLogging {
                       batch: Iterable[SolrInputDocument],
                       commitWithin: Option[Int],
                       numBytesInBatch: Long): Unit = {
+    sendBatchToSolrWithRetry(solrClient, collection, batch, commitWithin, numBytesInBatch, maxRetries = 3, initialDelayMs = 1000)
+  }
+
+  def sendBatchToSolrWithRetry(solrClient: SolrClient,
+                               collection: String,
+                               batch: Iterable[SolrInputDocument],
+                               commitWithin: Option[Int],
+                               numBytesInBatch: Long,
+                               maxRetries: Int,
+                               initialDelayMs: Int): Unit = {
     val req = new UpdateRequest()
     req.setParam("collection", collection)
     
@@ -516,33 +537,42 @@ object SolrSupport extends LazyLogging {
 
     req.add(asJavaCollection(batch))
 
-    try {
-      solrClient.request(req)
-    } catch {
-      case e: Exception =>
-        if (shouldRetry(e)) {
-          try {
-            Thread.sleep(2000)
-          } catch {
-            case ie: InterruptedException => Thread.interrupted()
-          }
+    var attempt = 0
+    var lastException: Exception = null
+
+    while (attempt <= maxRetries) {
+      try {
+        solrClient.request(req)
+        return // Success, exit the retry loop
+      } catch {
+        case e: Exception =>
+          lastException = e
+          attempt += 1
           
-          try {
-            solrClient.request(req)
-          } catch {
-            case ex: Exception =>
-              ex match {
-                case re: RuntimeException => throw re
-                case e: Exception => throw new RuntimeException(e)
-              }
+          if (attempt <= maxRetries && shouldRetry(e)) {
+            val delayMs = initialDelayMs * Math.pow(2, attempt - 1).toLong
+            logger.warn(s"Solr request failed (attempt $attempt/$maxRetries), retrying after ${delayMs}ms: ${e.getMessage}")
+            
+            try {
+              Thread.sleep(delayMs)
+            } catch {
+              case ie: InterruptedException => 
+                Thread.currentThread().interrupt()
+                throw new RuntimeException("Interrupted during retry delay", ie)
+            }
+          } else {
+            // Either exceeded max retries or non-retryable exception
+            logger.error(s"Solr request failed after $attempt attempts: ${e.getMessage}")
+            e match {
+              case re: RuntimeException => throw re
+              case ex: Exception => throw new RuntimeException(ex)
+            }
           }
-        } else {
-          e match {
-            case re: RuntimeException => throw re
-            case ex: Exception => throw new RuntimeException(ex)
-          }
-        }
+      }
     }
+    
+    // This should never be reached, but just in case
+    throw new RuntimeException(s"Failed to send batch to Solr after $maxRetries attempts", lastException)
   }
 
 
@@ -552,6 +582,11 @@ object SolrSupport extends LazyLogging {
       case e: ConnectException => true
       case e: NoHttpResponseException => true
       case e: SocketException => true
+      case e: java.util.concurrent.TimeoutException => true
+      case e: java.nio.channels.ClosedChannelException => true
+      case e: org.eclipse.jetty.io.EofException => true
+      case e: java.io.IOException if e.getMessage != null && e.getMessage.contains("dropped") => true
+      case e: java.io.IOException if e.getMessage != null && e.getMessage.contains("ClosedChannelException") => true
       case _ => false
     }
   }

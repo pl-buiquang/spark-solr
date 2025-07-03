@@ -34,6 +34,24 @@ class SolrConf(config: Map[String, String]) extends Serializable with LazyLoggin
 
   def getQuery: Option[String] = config.get(SOLR_QUERY_PARAM)
 
+  def getHttpTimeout: Option[Int] = 
+    if (config.contains(HTTP_TIMEOUT)) Some(config(HTTP_TIMEOUT).toInt) else None
+
+  def getHttpConnectTimeout: Option[Int] = 
+    if (config.contains(HTTP_CONNECT_TIMEOUT)) Some(config(HTTP_CONNECT_TIMEOUT).toInt) else None
+
+  def getZkClientTimeout: Option[Int] = 
+    if (config.contains(ZK_CLIENT_TIMEOUT)) Some(config(ZK_CLIENT_TIMEOUT).toInt) else None
+
+  def getZkConnectTimeout: Option[Int] = 
+    if (config.contains(ZK_CONNECT_TIMEOUT)) Some(config(ZK_CONNECT_TIMEOUT).toInt) else None
+
+  def getRetryAttempts: Option[Int] = 
+    if (config.contains(RETRY_ATTEMPTS)) Some(config(RETRY_ATTEMPTS).toInt) else None
+
+  def getRetryDelayMs: Option[Int] = 
+    if (config.contains(RETRY_DELAY_MS)) Some(config(RETRY_DELAY_MS).toInt) else None
+
   def getStreamingExpr: Option[String] = config.get(SOLR_STREAMING_EXPR)
 
   def getSqlStmt: Option[String] = config.get(SOLR_SQL_STMT)
