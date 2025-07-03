@@ -3,7 +3,7 @@ package com.lucidworks.spark
 import java.util.UUID
 
 import com.lucidworks.spark.util.ConfigurationConstants._
-import com.lucidworks.spark.util.{SolrCloudUtil, SolrQuerySupport}
+import com.lucidworks.spark.util.{SolrCloudUtil, SolrQuerySupport, SolrSupport}
 import org.apache.solr.client.solrj.request.{CollectionAdminRequest, UpdateRequest}
 import org.apache.solr.common.SolrInputDocument
 import org.apache.spark.sql.types.{DoubleType, LongType, StringType, TimestampType}
@@ -237,37 +237,41 @@ class RelationTestSuite extends TestSuiteBuilder with LazyLogging {
     assert(schema.fields(3).name == "user_id")
     assert(schema.fields(3).dataType == StringType)
 
-    val sqlStmt =
-      s"""
-         |    SELECT movie_id, COUNT(*) as agg_count, avg(rating) as avg_rating, sum(rating) as sum_rating, min(rating) as min_rating, max(rating) as max_rating
-         |      FROM ${ratingsCollection}
-         |  GROUP BY movie_id
-         |  ORDER BY movie_id asc
-       """.stripMargin
-    var sqlDF = sparkSession.read.format("solr").options(
-      Map("zkhost" -> zkHost, "sql" -> sqlStmt)).load
-    sqlDF.printSchema
-    sqlDF.show
+    val solrVersion = SolrSupport.getSolrVersion(zkHost)
+    if (!SolrSupport.isSolrVersionAtleast(solrVersion, 9, 0, 0)) {
+      // SQL handler is only available in Solr 8.x and earlier
+      val sqlStmt =
+        s"""
+           |    SELECT movie_id, COUNT(*) as agg_count, avg(rating) as avg_rating, sum(rating) as sum_rating, min(rating) as min_rating, max(rating) as max_rating
+           |      FROM ${ratingsCollection}
+           |  GROUP BY movie_id
+           |  ORDER BY movie_id asc
+         """.stripMargin
+      var sqlDF = sparkSession.read.format("solr").options(
+        Map("zkhost" -> zkHost, "sql" -> sqlStmt)).load
+      sqlDF.printSchema
+      sqlDF.show
 
-    assert(sqlDF.count == 2)
-    var sqlSchema = sqlDF.schema
-    assert(sqlSchema != null)
-    assert(sqlSchema.fields.length == 6)
-    assert(sqlSchema.fields(0).name == "agg_count")
-    assert(sqlSchema.fields(0).dataType == LongType)
-    assert(sqlSchema.fields(1).name == "avg_rating")
-    assert(sqlSchema.fields(1).dataType == DoubleType)
-    assert(sqlSchema.fields(2).name == "max_rating")
-    assert(sqlSchema.fields(2).dataType == DoubleType)
-    assert(sqlSchema.fields(3).name == "min_rating")
-    assert(sqlSchema.fields(3).dataType == DoubleType)
-    assert(sqlSchema.fields(4).name == "movie_id")
-    assert(sqlSchema.fields(4).dataType == StringType)
-    assert(sqlSchema.fields(5).name == "sum_rating")
-    assert(sqlSchema.fields(5).dataType == DoubleType)
-    val sqlResults = sqlDF.collectAsList()
-    val row0 = sqlResults.get(0)
-    assert(row0.getString(4) == "movie200")
+      assert(sqlDF.count == 2)
+      var sqlSchema = sqlDF.schema
+      assert(sqlSchema != null)
+      assert(sqlSchema.fields.length == 6)
+      assert(sqlSchema.fields(0).name == "agg_count")
+      assert(sqlSchema.fields(0).dataType == LongType)
+      assert(sqlSchema.fields(1).name == "avg_rating")
+      assert(sqlSchema.fields(1).dataType == DoubleType)
+      assert(sqlSchema.fields(2).name == "max_rating")
+      assert(sqlSchema.fields(2).dataType == DoubleType)
+      assert(sqlSchema.fields(3).name == "min_rating")
+      assert(sqlSchema.fields(3).dataType == DoubleType)
+      assert(sqlSchema.fields(4).name == "movie_id")
+      assert(sqlSchema.fields(4).dataType == StringType)
+      assert(sqlSchema.fields(5).name == "sum_rating")
+      assert(sqlSchema.fields(5).dataType == DoubleType)
+      val sqlResults = sqlDF.collectAsList()
+      val row0 = sqlResults.get(0)
+      assert(row0.getString(4) == "movie200")
+    }
 
     // proper handling of select expression decorator
     var selectExpr = s"""select(

@@ -1,6 +1,7 @@
 package com.lucidworks.spark.example.streaming;
 
 import com.lucidworks.spark.util.SolrSupport;
+import com.lucidworks.spark.util.DocumentFilterSupport;
 import com.lucidworks.spark.SparkApp;
 import com.lucidworks.spark.filter.DocFilterContext;
 import org.apache.commons.cli.CommandLine;
@@ -95,7 +96,7 @@ public class DocumentFilteringStreamProcessor extends SparkApp.StreamProcessor {
     // run each doc through a list of filters pulled from our DocFilterContext
     String filterCollection = cli.getOptionValue("filterCollection", collection);
     DStream<SolrInputDocument> enriched =
-      SolrSupport.filterDocuments(docFilterContext, zkHost, filterCollection, docs.dstream());
+      DocumentFilterSupport.filterDocuments(docFilterContext, zkHost, filterCollection, docs.dstream());
 
     // now index the enriched docs into Solr (or do whatever after the matching process runs)
     SolrSupport.indexDStreamOfDocs(zkHost, collection, batchSize, batchSizeType, enriched);
