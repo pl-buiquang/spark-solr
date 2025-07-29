@@ -55,6 +55,28 @@ mvn clean package -Pcoverage
 mvn clean package -Prelease
 ```
 
+### Publish to Maven Central
+```bash
+# Deploy to Central Portal (requires user token in ~/.m2/settings.xml)
+mvn clean deploy -Prelease
+
+# Or publish manually using the central-publishing-maven-plugin
+mvn central:publish -Prelease
+```
+
+**Note**: Publishing requires:
+1. User token from https://central.sonatype.com/account configured in `~/.m2/settings.xml`:
+```xml
+<servers>
+  <server>
+    <id>central</id>
+    <username><!-- your token username --></username>
+    <password><!-- your token password --></password>
+  </server>
+</servers>
+```
+2. GPG signing configured (included in release profile)
+
 ## Core Architecture
 
 ### Data Source Integration (`src/main/scala/solr/DefaultSource.scala`)

@@ -9,7 +9,7 @@
   <packaging>jar</packaging>
   <name>spark-solr</name>
   <description>Tools for reading data from Spark into Solr</description>
-  <url>https://github.com/LucidWorks/spark-solr</url>
+  <url>https://github.com/pl-buiquang/spark-solr</url>
   <licenses>
     <license>
       <name>Apache License, Version 2.0</name>
@@ -20,26 +20,18 @@
   </licenses>
   <developers>
     <developer>
-      <name>Lucidworks</name>
-      <organization>Lucidworks</organization>
-      <organizationUrl>www.lucidworks.com</organizationUrl>
+      <name>Paul Bui Quang</name>
+      <email>pl-buiquang@users.noreply.github.com</email>
+      <organization>pl-buiquang</organization>
+      <organizationUrl>https://github.com/pl-buiquang</organizationUrl>
     </developer>
   </developers>
   <scm>
-    <connection>scm:git:git@github.com:LucidWorks/spark-solr.git</connection>
-    <developerConnection>scm:git:git@github.com:LucidWorks/spark-solr.git</developerConnection>
-    <url>https://github.com/LucidWorks/spark-solr</url>
+    <connection>scm:git:https://github.com/pl-buiquang/spark-solr.git</connection>
+    <developerConnection>scm:git:https://github.com/pl-buiquang/spark-solr.git</developerConnection>
+    <url>https://github.com/pl-buiquang/spark-solr</url>
+    <tag>HEAD</tag>
   </scm>
-  <distributionManagement>
-    <repository>
-      <id>gitlab-maven</id>
-      <url>https://gitlab.data.aphp.fr/api/v4/projects/2434/packages/maven</url>
-    </repository>
-    <snapshotRepository>
-      <id>gitlab-maven</id>
-      <url>https://gitlab.data.aphp.fr/api/v4/projects/2434/packages/maven</url>
-    </snapshotRepository>
-  </distributionManagement>
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <java.version>11</java.version>
@@ -86,6 +78,10 @@
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-javadoc-plugin</artifactId>
             <version>3.3.0</version>
+            <configuration>
+              <excludePackageNames>com.lucidworks.spark.example</excludePackageNames>
+              <failOnError>false</failOnError>
+            </configuration>
             <executions>
               <execution>
                 <id>attach-javadocs</id>
@@ -401,6 +397,28 @@
             </goals>
           </execution>
         </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.sonatype.central</groupId>
+        <artifactId>central-publishing-maven-plugin</artifactId>
+        <version>0.8.0</version>
+        <extensions>true</extensions>
+        <configuration>
+          <publishingServerId>central</publishingServerId>
+          <autoPublish>true</autoPublish>
+          <checksums>required</checksums>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-release-plugin</artifactId>
+        <version>3.0.0-M7</version>
+        <configuration>
+          <autoVersionSubmodules>true</autoVersionSubmodules>
+          <useReleaseProfile>false</useReleaseProfile>
+          <releaseProfiles>release</releaseProfiles>
+          <goals>deploy</goals>
+        </configuration>
       </plugin>
     </plugins>
   </build>
