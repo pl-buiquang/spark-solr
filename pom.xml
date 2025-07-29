@@ -3,7 +3,7 @@
          xmlns:Xlint="http://java.sun.com/xml/ns/j2ee"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
   <modelVersion>4.0.0</modelVersion>
-  <groupId>com.lucidworks.spark</groupId>
+  <groupId>fr.aphp.id</groupId>
   <artifactId>spark-solr</artifactId>
   <version>4.1.0-SNAPSHOT</version>
   <packaging>jar</packaging>
