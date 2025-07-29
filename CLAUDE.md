@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Spark-Solr** is a Lucidworks connector library that enables seamless integration between Apache Spark and Apache Solr. It provides tools for reading data from Solr as Spark DataFrames/RDDs and indexing objects from Spark into Solr using SolrJ.
 
-**Current Version**: 4.0.4-SNAPSHOT  
+**Current Version**: 4.1.0  
 **Compatible with**: Spark 3.1.2, Solr 8.11.0, Scala 2.12.12, Java 8
 
 ## Build Commands
@@ -16,8 +16,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 mvn clean package -DskipTests
 ```
 Produces two main artifacts:
-- `target/spark-solr-4.0.4-SNAPSHOT.jar` - Core library for embedding
-- `target/spark-solr-4.0.4-SNAPSHOT-shaded.jar` - Standalone jar for spark-submit
+- `target/spark-solr-4.1.0.jar` - Core library for embedding
+- `target/spark-solr-4.1.0-shaded.jar` - Standalone jar for spark-submit
 
 ### Build with Tests
 ```bash
